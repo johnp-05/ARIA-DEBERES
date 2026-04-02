@@ -13,7 +13,7 @@ from scraper import EsemtiaScraper
 # ─── Configuración ────────────────────────────────────────────────────────────
 TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
 CHAT_ID        = os.environ["CHAT_ID"]
-ESEMTIA_USER   = os.environ["ESEMTIA_USER"]   # tu correo: juan.est@uets.edu.ec
+ESEMTIA_USER   = os.environ["ESEMTIA_USER"]
 ESEMTIA_PASS   = os.environ["ESEMTIA_PASS"]
 HORA_AVISO     = "14:30"
 ZONA_HORARIA   = "America/Guayaquil"
@@ -102,7 +102,8 @@ async def main():
 
     await app.initialize()
     await app.start()
-    await app.updater.start_polling()
+    # drop_pending_updates=True evita el 409 Conflict con otras instancias
+    await app.updater.start_polling(drop_pending_updates=True)
     try:
         await asyncio.Event().wait()
     finally:
