@@ -1,5 +1,37 @@
 [phases.setup]
-nixPkgs = ["chromium", "nss", "freetype", "freetype-dev", "harfbuzz", "ca-certificates", "ttf-liberation", "fontconfig"]
+nixPkgs = [
+  "gcc",
+  "gcc-unwrapped",
+  "chromium",
+  "nss",
+  "freetype",
+  "harfbuzz",
+  "ca-certificates",
+  "fontconfig",
+  "glib",
+  "xorg.libX11",
+  "xorg.libXcomposite",
+  "xorg.libXdamage",
+  "xorg.libXext",
+  "xorg.libXfixes",
+  "xorg.libXrandr",
+  "xorg.libxcb",
+  "libxkbcommon",
+  "dbus",
+  "expat",
+  "alsaLib",
+  "cups",
+  "gtk3",
+  "pango",
+  "atk",
+  "at-spi2-atk",
+  "at-spi2-core",
+  "nspr"
+]
 
 [phases.install]
-cmds = ["pip install -r requirements.txt", "playwright install chromium"]
+cmds = [
+  "pip install --upgrade pip",
+  "pip install -r requirements.txt",
+  "playwright install chromium --with-deps"
+]
