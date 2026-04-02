@@ -46,9 +46,17 @@ class EsemtiaScraper:
                 if name:
                     payload[name] = inp.get("value", "")
 
+            # Incluir el botón de submit (necesario para ASP.NET)
+            btn = form.find("input", {"type": "submit"}) or form.find("button", {"type": "submit"})
+            if btn and btn.get("name"):
+                payload[btn.get("name")] = btn.get("value", "")
+
         # 3) Credenciales con nombres exactos confirmados
         payload["txtBoxUsuario"]  = self.usuario
         payload["txtBoxPassword"] = self.password
+
+        # DEBUG: ver qué campos se están enviando
+        logger.info(f"Campos del payload (sin contraseña): { {k: v for k, v in payload.items() if 'pass' not in k.lower() and 'password' not in k.lower()} }")
 
         # 4) POST login
         resp = self.session.post(
@@ -56,8 +64,13 @@ class EsemtiaScraper:
         )
         resp.raise_for_status()
 
-        # 5) Verificar éxito — después del login debe estar en comunicacion.esemtia.ec
-        if "loginEsemtia" in resp.url.lower() or "login" in resp.url.lower():
+        # DEBUG: ver a dónde redirigió y qué devolvió
+        logger.info(f"URL final tras login: {resp.url}")
+        logger.info(f"Status code: {resp.status_code}")
+        logger.info(f"HTML inicio (primeros 800 chars): {resp.text[:800]}")
+
+        # 5) Verificar éxito — solo falla si SIGUE en edu.esemtia.ec con login en la URL
+        if "edu.esemtia.ec" in resp.url and "login" in resp.url.lower():
             raise ValueError("❌ Login fallido: usuario o contraseña incorrectos.")
 
         logger.info(f"✅ Login exitoso → {resp.url}")
@@ -68,6 +81,7 @@ class EsemtiaScraper:
 
         if "tablaTareas" not in resp.text:
             logger.warning("⚠️ La página de tareas no tiene el formato esperado.")
+            logger.info(f"HTML tareas (primeros 800 chars): {resp.text[:800]}")
             return []
 
         return self._parsear_tareas(resp.text, dias)
