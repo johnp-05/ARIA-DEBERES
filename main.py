@@ -63,7 +63,7 @@ async def revisar_y_notificar(bot: Bot):
     logger.info("⏰ Revisando deberes en Esemtia...")
     try:
         scraper = EsemtiaScraper(ESEMTIA_USER, ESEMTIA_PASS)
-        tareas  = scraper.obtener_tareas_proximas(dias=7)
+        tareas  = await scraper.obtener_tareas_proximas(dias=7)
         mensaje = formatear_mensaje(tareas)
         await bot.send_message(chat_id=CHAT_ID, text=mensaje, parse_mode="Markdown")
         logger.info("✅ Notificación enviada.")
@@ -102,7 +102,6 @@ async def main():
 
     await app.initialize()
     await app.start()
-    # drop_pending_updates=True evita el 409 Conflict con otras instancias
     await app.updater.start_polling(drop_pending_updates=True)
     try:
         await asyncio.Event().wait()
