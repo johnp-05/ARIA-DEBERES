@@ -1,20 +1,7 @@
 """
-Scraper para Esemtia — configuración exacta confirmada por inspección.
-
-LOGIN:
-  URL:    https://edu.esemtia.ec/LoginEsemtia.aspx
-  Campo usuario:   txtBoxUsuario
-  Campo password:  txtBoxPassword
-  Plataforma:      ASP.NET WebForms → requiere __VIEWSTATE y otros campos ocultos
-
-TAREAS:
-  table.tablaTareas
-    tr.contenido  id="tarea_XXXX"
-      td.materiaClase  → materia
-      td.tarea         → título
-      td.fecha         → fecha de asignación
-      td.fechaEntrega  → fecha de entrega (la que usamos)
-    tr id="tareaContent_XXXX"  → detalle oculto con descripción
+Scraper Esemtia - URLs exactas confirmadas:
+  Login:  https://comunicacion.esemtia.ec/LoginEsemtia.aspx
+  Tareas: https://comunicacion.esemtia.ec/Ejercicios.aspx
 """
 
 import logging
@@ -26,16 +13,12 @@ from bs4 import BeautifulSoup
 
 logger = logging.getLogger(__name__)
 
-LOGIN_URL  = "https://edu.esemtia.ec/LoginEsemtia.aspx?microsoft=False&google=False&microsoftEnfant=False&googleEnfant=False"
-TAREAS_URL = "https://edu.esemtia.ec/Tareas"   # ajustar si cambia
+LOGIN_URL  = "https://comunicacion.esemtia.ec/LoginEsemtia.aspx?microsoft=False&google=False&microsoftEnfant=False&googleEnfant=False"
+TAREAS_URL = "https://comunicacion.esemtia.ec/Ejercicios.aspx"
 
 
 class EsemtiaScraper:
     def __init__(self, usuario: str, password: str):
-        """
-        usuario  : tu correo de Esemtia (ej: juan.perez.est@uets.edu.ec)
-        password : tu contraseña
-        """
         self.usuario  = usuario
         self.password = password
         self.session  = requests.Session()
@@ -45,93 +28,49 @@ class EsemtiaScraper:
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
                 "Chrome/124.0.0.0 Safari/537.36"
             ),
-            "Origin":  "https://edu.esemtia.ec",
-            "Referer": LOGIN_URL,
         })
         self._login()
 
-    # ── Login ─────────────────────────────────────────────────────────────────
-
     def _login(self):
-        """
-        Login en ASP.NET WebForms.
-        Primero descarga la página para obtener __VIEWSTATE y demás campos
-        ocultos, luego hace el POST con todo incluido.
-        """
-        # 1) GET para obtener los campos ocultos de ASP.NET
+        # 1) GET para obtener ViewState y campos ocultos de ASP.NET
         resp = self.session.get(LOGIN_URL, timeout=15)
         resp.raise_for_status()
         soup = BeautifulSoup(resp.text, "html.parser")
 
-        # 2) Recoger TODOS los inputs ocultos del formulario (ViewState, etc.)
+        # 2) Recoger TODOS los inputs ocultos
         payload = {}
         form = soup.find("form", {"id": "form1"}) or soup.find("form")
         if form:
             for inp in form.find_all("input", {"type": "hidden"}):
-                name  = inp.get("name", "")
-                value = inp.get("value", "")
+                name = inp.get("name", "")
                 if name:
-                    payload[name] = value
-            logger.info(f"Campos ocultos encontrados: {list(payload.keys())}")
+                    payload[name] = inp.get("value", "")
 
-        # 3) Agregar credenciales con los nombres exactos confirmados
+        # 3) Credenciales con nombres exactos confirmados
         payload["txtBoxUsuario"]  = self.usuario
         payload["txtBoxPassword"] = self.password
 
-        # 4) Simular clic en el botón ACCEDER
-        #    (puede llamarse btnAcceder, btnLogin, btnIngresar, etc.)
-        boton = (
-            form.find("input",  {"type": "submit"}) or
-            form.find("button", {"type": "submit"}) or
-            form.find("input",  {"type": "image"})
-        ) if form else None
-
-        if boton and boton.get("name"):
-            payload[boton["name"]] = boton.get("value", "Acceder")
-            logger.info(f"Botón encontrado: {boton.get('name')}")
-        else:
-            # Intentar nombres comunes del botón en Esemtia
-            for nombre_btn in ["btnAcceder", "btnLogin", "btnIngresar", "Button1"]:
-                payload[nombre_btn] = "Acceder"
-
-        # 5) POST al mismo URL (action relativo → mismo URL)
-        resp = self.session.post(LOGIN_URL, data=payload, timeout=15, allow_redirects=True)
+        # 4) POST login
+        resp = self.session.post(
+            LOGIN_URL, data=payload, timeout=15, allow_redirects=True
+        )
         resp.raise_for_status()
 
-        # 6) Verificar éxito
-        texto = resp.text.lower()
-        if "loginError" in resp.text or "contraseña incorrecta" in texto or "usuario incorrecto" in texto:
-            raise ValueError("❌ Login fallido: credenciales incorrectas.")
+        # 5) Verificar éxito — después del login debe estar en comunicacion.esemtia.ec
         if "loginEsemtia" in resp.url.lower() or "login" in resp.url.lower():
-            raise ValueError("❌ Login fallido: seguimos en la página de login.")
+            raise ValueError("❌ Login fallido: usuario o contraseña incorrectos.")
 
-        logger.info(f"✅ Login exitoso. Redirigido a: {resp.url}")
-
-    # ── Obtener tareas ────────────────────────────────────────────────────────
+        logger.info(f"✅ Login exitoso → {resp.url}")
 
     def obtener_tareas_proximas(self, dias: int = 7) -> list[dict]:
-        """Devuelve las tareas cuya fecha de entrega cae en los próximos `dias` días."""
-        rutas = [
-            "/Tareas",
-            "/tareas",
-            "/Tareas.aspx",
-            "/tareas.aspx",
-            "/estudiante/Tareas",
-        ]
-        for ruta in rutas:
-            try:
-                url  = f"https://edu.esemtia.ec{ruta}"
-                resp = self.session.get(url, timeout=15)
-                if resp.status_code == 200 and "tablaTareas" in resp.text:
-                    logger.info(f"✅ Tareas encontradas en: {ruta}")
-                    return self._parsear_tareas(resp.text, dias)
-            except Exception as e:
-                logger.debug(f"Ruta {ruta} falló: {e}")
+        resp = self.session.get(TAREAS_URL, timeout=15)
+        resp.raise_for_status()
 
-        logger.warning("⚠️ No se encontró la página de tareas.")
-        return []
+        if "tablaTareas" not in resp.text:
+            logger.warning("⚠️ La página de tareas no tiene el formato esperado.")
+            return []
 
-    # ── Parser ────────────────────────────────────────────────────────────────
+        return self._parsear_tareas(resp.text, dias)
 
     def _parsear_tareas(self, html: str, dias: int) -> list[dict]:
         soup   = BeautifulSoup(html, "html.parser")
@@ -172,20 +111,16 @@ class EsemtiaScraper:
         return tareas
 
     def _extraer_descripcion(self, soup: BeautifulSoup, tarea_id: str) -> str:
-        """Extrae el texto del deber del tr de detalle oculto."""
         contenido_id = tarea_id.replace("tarea_", "tareaContent_")
         contenido_tr = soup.find("tr", {"id": contenido_id})
         if not contenido_tr:
             return ""
         texto = contenido_tr.get_text(" ", strip=True)
-        # Extraer solo la parte entre "Tarea:" y "Fecha Entrega"
         match = re.search(
             r"(?:Tarea:|tarea:)\s*(.+?)(?:Fecha Entrega|Fecha:|$)",
             texto, re.IGNORECASE | re.DOTALL,
         )
         return match.group(1).strip()[:250] if match else texto[:200]
-
-    # ── Parsear fecha ─────────────────────────────────────────────────────────
 
     def _parsear_fecha(self, texto: str):
         texto = texto.strip()
