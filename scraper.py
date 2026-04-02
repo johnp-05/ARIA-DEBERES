@@ -33,50 +33,54 @@ class EsemtiaScraper:
 
             try:
                 # ── PASO 1: Login ──────────────────────────────────────────
-                logger.info("🔐 Abriendo página de login...")
+                logger.info("Abriendo pagina de login...")
                 await page.goto(LOGIN_URL, timeout=20000)
                 await page.wait_for_load_state("networkidle", timeout=15000)
 
                 await page.fill("input#txtBoxUsuario", self.usuario)
                 await page.fill("input#txtBoxPassword", self.password)
 
-                logger.info("📤 Enviando credenciales con Enter...")
+                logger.info("Enviando credenciales con Enter...")
                 await page.press("input#txtBoxPassword", "Enter")
-
                 await page.wait_for_load_state("networkidle", timeout=15000)
-                logger.info(f"[Login] URL tras clic: {page.url}")
+                logger.info(f"[Login] URL: {page.url}")
 
-                # ── PASO 2: Página intermedia ──────────────────────────────
+                # ── PASO 2: Pagina de seleccion -> WEB COMUNICACION ────────
                 if "edu.esemtia.ec" in page.url:
-                    logger.info("🔀 Página intermedia detectada, buscando WEB COMUNICACIÓN...")
+                    logger.info("Pagina de seleccion detectada, navegando a WEB COMUNICACION...")
                     try:
-                        await page.get_by_text(re.compile(r"comunicaci", re.IGNORECASE)).first.click(timeout=8000)
-                        await page.wait_for_load_state("networkidle", timeout=15000)
-                        logger.info(f"[Selección] URL: {page.url}")
+                        await page.wait_for_selector("text=WEB COMUNICACIÓN", timeout=8000)
+                        await page.get_by_text("WEB COMUNICACIÓN").click()
+                        await page.wait_for_url("*comunicacion.esemtia.ec*", timeout=15000)
+                        logger.info(f"[Seleccion] URL: {page.url}")
                     except PWTimeout:
-                        links = await page.locator("a[href*='comunicacion']").all()
-                        if links:
-                            await links[0].click()
-                            await page.wait_for_load_state("networkidle", timeout=15000)
-                        else:
-                            await page.goto("https://comunicacion.esemtia.ec/", timeout=15000)
-                            await page.wait_for_load_state("networkidle", timeout=15000)
+                        logger.warning("Timeout en seleccion, yendo directo a comunicacion...")
+                        await page.goto("https://comunicacion.esemtia.ec/", timeout=15000)
+                        await page.wait_for_load_state("networkidle", timeout=15000)
 
                 if "login" in page.url.lower() and "edu.esemtia.ec" in page.url:
-                    raise ValueError("❌ Login fallido: usuario o contraseña incorrectos.")
+                    raise ValueError("Login fallido: usuario o contrasena incorrectos.")
 
-                logger.info(f"✅ Login exitoso → {page.url}")
+                logger.info(f"En portal: {page.url}")
 
                 # ── PASO 3: Ir a Tareas ────────────────────────────────────
-                logger.info("📋 Buscando pestaña Tareas...")
+                logger.info("Buscando pestana Tareas...")
                 try:
-                    await page.get_by_text(re.compile(r"^tareas$", re.IGNORECASE)).click(timeout=8000)
+                    await page.wait_for_selector("text=Tareas", timeout=8000)
+                    await page.get_by_text("Tareas").first.click()
                     await page.wait_for_load_state("networkidle", timeout=10000)
                     logger.info(f"[Tareas] URL: {page.url}")
                 except PWTimeout:
-                    logger.warning("No encontré pestaña Tareas, probando URL directa...")
-                    await page.goto("https://comunicacion.esemtia.ec/Tareas.aspx", timeout=15000)
-                    await page.wait_for_load_state("networkidle", timeout=10000)
+                    logger.warning("No encontre pestana Tareas, probando URLs...")
+                    for path in ["Ejercicios.aspx", "Alumno/Tareas.aspx", "Default.aspx"]:
+                        try:
+                            url = f"https://comunicacion.esemtia.ec/{path}"
+                            r = await page.goto(url, timeout=10000)
+                            if r and r.status == 200:
+                                logger.info(f"[Tareas] URL OK: {url}")
+                                break
+                        except Exception:
+                            continue
 
                 html = await page.content()
                 logger.info(f"[Tareas] HTML (3000 chars): {html[:3000]}")
@@ -142,7 +146,7 @@ class EsemtiaScraper:
                 })
 
         tareas.sort(key=lambda t: t["fecha"])
-        logger.info(f"📋 {len(tareas)} tarea(s) en los próximos {dias} días.")
+        logger.info(f"{len(tareas)} tarea(s) en los proximos {dias} dias.")
         return tareas
 
     def _parsear_fecha(self, texto: str):
