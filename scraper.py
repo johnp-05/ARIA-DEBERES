@@ -1,7 +1,8 @@
 """
-Scraper Esemtia - URLs exactas confirmadas:
-  Login:  https://edu.esemtia.ec/LoginEsemtia.aspx
-  Tareas: https://comunicacion.esemtia.ec/Ejercicios.aspx
+Scraper Esemtia — flujo completo:
+  1. Login en edu.esemtia.ec/LoginEsemtia.aspx
+  2. Página intermedia → elegir "WEB COMUNICACIÓN"
+  3. Ir a Tareas en comunicacion.esemtia.ec
 """
 
 import logging
@@ -13,8 +14,8 @@ from bs4 import BeautifulSoup
 
 logger = logging.getLogger(__name__)
 
-LOGIN_URL  = "https://edu.esemtia.ec/LoginEsemtia.aspx?microsoft=False&google=False&microsoftEnfant=False&googleEnfant=False"
-TAREAS_URL = "https://comunicacion.esemtia.ec/Ejercicios.aspx"
+LOGIN_URL = "https://edu.esemtia.ec/LoginEsemtia.aspx?microsoft=False&google=False&microsoftEnfant=False&googleEnfant=False"
+BASE_COM  = "https://comunicacion.esemtia.ec"
 
 
 class EsemtiaScraper:
@@ -28,64 +29,130 @@ class EsemtiaScraper:
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
                 "Chrome/124.0.0.0 Safari/537.36"
             ),
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "es-EC,es;q=0.9,en;q=0.8",
         })
         self._login()
 
+    # ──────────────────────────────────────────────────────────────────────────
+    # PASO 1 — Login
+    # ──────────────────────────────────────────────────────────────────────────
     def _login(self):
-        # 1) GET para obtener ViewState y campos ocultos de ASP.NET
         resp = self.session.get(LOGIN_URL, timeout=15)
         resp.raise_for_status()
         soup = BeautifulSoup(resp.text, "html.parser")
 
-        # 2) Recoger TODOS los inputs ocultos
+        # Recoger todos los campos ocultos del form ASP.NET
         payload = {}
         form = soup.find("form", {"id": "form1"}) or soup.find("form")
         if form:
-            for inp in form.find_all("input", {"type": "hidden"}):
+            for inp in form.find_all("input"):
                 name = inp.get("name", "")
-                if name:
+                tipo = inp.get("type", "text").lower()
+                if name and tipo != "password":
                     payload[name] = inp.get("value", "")
 
-            # Incluir el botón de submit (necesario para ASP.NET)
-            btn = form.find("input", {"type": "submit"}) or form.find("button", {"type": "submit"})
-            if btn and btn.get("name"):
-                payload[btn.get("name")] = btn.get("value", "")
+        logger.info(f"Campos del form: {list(payload.keys())}")
 
-        # 3) Credenciales con nombres exactos confirmados
+        # Credenciales
         payload["txtBoxUsuario"]  = self.usuario
         payload["txtBoxPassword"] = self.password
 
-        # DEBUG: ver qué campos se están enviando
-        logger.info(f"Campos del payload (sin contraseña): { {k: v for k, v in payload.items() if 'pass' not in k.lower() and 'password' not in k.lower()} }")
-
-        # 4) POST login
+        # POST login
         resp = self.session.post(
-            LOGIN_URL, data=payload, timeout=15, allow_redirects=True
+            LOGIN_URL,
+            data=payload,
+            headers={
+                "Referer": LOGIN_URL,
+                "Origin": "https://edu.esemtia.ec",
+                "Content-Type": "application/x-www-form-urlencoded",
+            },
+            timeout=15,
+            allow_redirects=True,
         )
         resp.raise_for_status()
 
-        # DEBUG: ver a dónde redirigió y qué devolvió
-        logger.info(f"URL final tras login: {resp.url}")
-        logger.info(f"Status code: {resp.status_code}")
-        logger.info(f"HTML inicio (primeros 800 chars): {resp.text[:800]}")
+        logger.info(f"[Login] URL tras POST: {resp.url}")
+        logger.info(f"[Login] HTML (600 chars): {resp.text[:600]}")
 
-        # 5) Verificar éxito — solo falla si SIGUE en edu.esemtia.ec con login en la URL
+        # ── PASO 2 — Página intermedia de selección ───────────────────────────
+        # Si todavía estamos en edu.esemtia.ec y hay botones de selección,
+        # buscamos el enlace a "WEB COMUNICACIÓN" y lo seguimos
+        if "edu.esemtia.ec" in resp.url:
+            resp = self._elegir_web_comunicacion(resp)
+
+        # Verificar que llegamos a comunicacion.esemtia.ec
         if "edu.esemtia.ec" in resp.url and "login" in resp.url.lower():
             raise ValueError("❌ Login fallido: usuario o contraseña incorrectos.")
 
-        logger.info(f"✅ Login exitoso → {resp.url}")
+        logger.info(f"✅ Sesión iniciada → {resp.url}")
 
+    # ──────────────────────────────────────────────────────────────────────────
+    # PASO 2 — Elegir "WEB COMUNICACIÓN" en la página intermedia
+    # ──────────────────────────────────────────────────────────────────────────
+    def _elegir_web_comunicacion(self, resp: requests.Response) -> requests.Response:
+        soup = BeautifulSoup(resp.text, "html.parser")
+
+        # Buscar enlace o botón que apunte a comunicacion.esemtia.ec
+        # o que contenga el texto "comunicación" / "WEB"
+        url_destino = None
+
+        for tag in soup.find_all(["a", "input", "button"]):
+            href  = tag.get("href", "") or tag.get("onclick", "") or tag.get("value", "")
+            texto = tag.get_text(strip=True).lower()
+            if "comunicaci" in texto or "comunicacion" in href.lower() or "comunicacion.esemtia" in href.lower():
+                if href.startswith("http"):
+                    url_destino = href
+                elif href.startswith("/"):
+                    url_destino = "https://edu.esemtia.ec" + href
+                logger.info(f"[Selección] Enlace WEB COMUNICACIÓN encontrado: {url_destino}")
+                break
+
+        # Si no encontramos el enlace por texto, ir directamente
+        if not url_destino:
+            logger.warning("[Selección] No encontré enlace a WEB COMUNICACIÓN, probando URL directa")
+            url_destino = BASE_COM + "/"
+
+        resp2 = self.session.get(url_destino, timeout=15, allow_redirects=True)
+        resp2.raise_for_status()
+        logger.info(f"[Selección] URL tras elegir WEB COMUNICACIÓN: {resp2.url}")
+        return resp2
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # PASO 3 — Obtener tareas
+    # ──────────────────────────────────────────────────────────────────────────
     def obtener_tareas_proximas(self, dias: int = 7) -> list[dict]:
-        resp = self.session.get(TAREAS_URL, timeout=15)
-        resp.raise_for_status()
+        # La pestaña "Tareas" en comunicacion.esemtia.ec
+        # Probamos las URLs más comunes
+        urls_candidatas = [
+            BASE_COM + "/Tareas.aspx",
+            BASE_COM + "/Ejercicios.aspx",
+            BASE_COM + "/Alumno/Tareas.aspx",
+            BASE_COM + "/Comunicacion/Tareas.aspx",
+        ]
 
-        if "tablaTareas" not in resp.text:
-            logger.warning("⚠️ La página de tareas no tiene el formato esperado.")
-            logger.info(f"HTML tareas (primeros 800 chars): {resp.text[:800]}")
+        html = None
+        for url in urls_candidatas:
+            try:
+                resp = self.session.get(url, timeout=15, allow_redirects=True)
+                if resp.status_code == 200 and len(resp.text) > 500:
+                    logger.info(f"✅ Página de tareas encontrada: {resp.url}")
+                    html = resp.text
+                    break
+            except Exception as e:
+                logger.warning(f"URL {url} falló: {e}")
+
+        if not html:
+            logger.warning("⚠️ No se encontró la página de tareas.")
             return []
 
-        return self._parsear_tareas(resp.text, dias)
+        logger.info(f"HTML tareas (600 chars): {html[:600]}")
+        return self._parsear_tareas(html, dias)
 
+    # ──────────────────────────────────────────────────────────────────────────
+    # Parser — compatible con la tabla vista en pantalla
+    # Columnas: Materia/Clase | Tarea | Fecha | Fecha Entrega
+    # ──────────────────────────────────────────────────────────────────────────
     def _parsear_tareas(self, html: str, dias: int) -> list[dict]:
         soup   = BeautifulSoup(html, "html.parser")
         hoy    = datetime.now().date()
@@ -93,48 +160,69 @@ class EsemtiaScraper:
         tareas = []
         vistas = set()
 
-        for tabla in soup.select("table.tablaTareas"):
-            for fila in tabla.select("tr.contenido"):
-                tarea_id = fila.get("id", "")
-                if not tarea_id or tarea_id in vistas:
-                    continue
-                vistas.add(tarea_id)
+        # Buscar tablas que contengan "Fecha Entrega" en el encabezado
+        for tabla in soup.find_all("table"):
+            encabezados = [th.get_text(strip=True).lower() for th in tabla.find_all("th")]
+            tiene_fecha_entrega = any("entrega" in e for e in encabezados)
+            tiene_materia       = any("materia" in e for e in encabezados)
 
+            if not (tiene_fecha_entrega or tiene_materia):
+                # También probar con clases CSS del scraper original
+                pass
+
+            for fila in tabla.find_all("tr"):
+                celdas = fila.find_all("td")
+                if len(celdas) < 3:
+                    continue
+
+                # Intentar con clases CSS (formato original)
                 materia_td       = fila.select_one("td.materiaClase")
                 titulo_td        = fila.select_one("td.tarea")
                 fecha_entrega_td = fila.select_one("td.fechaEntrega")
 
+                # Si no hay clases, usar posición por columna según lo visto en pantalla
+                # Columnas: Materia/Clase(0) | Tarea(1) | Fecha(2) | Fecha Entrega(3)
                 if not (materia_td and titulo_td and fecha_entrega_td):
+                    if len(celdas) >= 4:
+                        materia_td       = celdas[0]
+                        titulo_td        = celdas[1]
+                        fecha_entrega_td = celdas[3]  # Fecha Entrega es la 4ª columna
+                    elif len(celdas) == 3:
+                        materia_td       = celdas[0]
+                        titulo_td        = celdas[1]
+                        fecha_entrega_td = celdas[2]
+                    else:
+                        continue
+
+                materia = materia_td.get_text(strip=True)
+                titulo  = titulo_td.get_text(strip=True)
+                fecha_texto = fecha_entrega_td.get_text(strip=True)
+
+                # Ignorar filas vacías o de encabezado
+                if not materia or not titulo or not fecha_texto:
+                    continue
+                if materia.lower() in ("materia", "materia/clase", "clase"):
                     continue
 
-                fecha_entrega = self._parsear_fecha(fecha_entrega_td.get_text(strip=True))
+                clave = f"{materia}|{titulo}"
+                if clave in vistas:
+                    continue
+                vistas.add(clave)
+
+                fecha_entrega = self._parsear_fecha(fecha_texto)
                 if not fecha_entrega or not (hoy <= fecha_entrega <= limite):
                     continue
 
-                descripcion = self._extraer_descripcion(soup, tarea_id)
-
                 tareas.append({
                     "fecha":       fecha_entrega,
-                    "materia":     materia_td.get_text(strip=True),
-                    "titulo":      titulo_td.get_text(strip=True),
-                    "descripcion": descripcion,
+                    "materia":     materia,
+                    "titulo":      titulo,
+                    "descripcion": "",
                 })
 
         tareas.sort(key=lambda t: t["fecha"])
         logger.info(f"📋 {len(tareas)} tarea(s) en los próximos {dias} días.")
         return tareas
-
-    def _extraer_descripcion(self, soup: BeautifulSoup, tarea_id: str) -> str:
-        contenido_id = tarea_id.replace("tarea_", "tareaContent_")
-        contenido_tr = soup.find("tr", {"id": contenido_id})
-        if not contenido_tr:
-            return ""
-        texto = contenido_tr.get_text(" ", strip=True)
-        match = re.search(
-            r"(?:Tarea:|tarea:)\s*(.+?)(?:Fecha Entrega|Fecha:|$)",
-            texto, re.IGNORECASE | re.DOTALL,
-        )
-        return match.group(1).strip()[:250] if match else texto[:200]
 
     def _parsear_fecha(self, texto: str):
         texto = texto.strip()
