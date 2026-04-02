@@ -40,14 +40,8 @@ class EsemtiaScraper:
                 await page.fill("input#txtBoxUsuario", self.usuario)
                 await page.fill("input#txtBoxPassword", self.password)
 
-                logger.info("📤 Enviando credenciales...")
-                try:
-                    await page.click("input[type='submit']", timeout=5000)
-                except PWTimeout:
-                    try:
-                        await page.click("button[type='submit']", timeout=5000)
-                    except PWTimeout:
-                        await page.get_by_text("ACCEDER").click(timeout=5000)
+                logger.info("📤 Enviando credenciales con Enter...")
+                await page.press("input#txtBoxPassword", "Enter")
 
                 await page.wait_for_load_state("networkidle", timeout=15000)
                 logger.info(f"[Login] URL tras clic: {page.url}")
