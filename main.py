@@ -26,6 +26,11 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 tz = pytz.timezone(ZONA_HORARIA)
 
+DIAS_SEMANA = {
+    "Monday": "Lunes", "Tuesday": "Martes", "Wednesday": "Miércoles",
+    "Thursday": "Jueves", "Friday": "Viernes", "Saturday": "Sábado", "Sunday": "Domingo"
+}
+
 
 def formatear_mensaje(tareas: list[dict]) -> str:
     hoy    = datetime.now(tz).date()
@@ -46,27 +51,59 @@ def formatear_mensaje(tareas: list[dict]) -> str:
             encabezado = "🔴 *PARA MAÑANA*"
         else:
             dias_falta = (fecha - hoy).days
-            encabezado = f"🟡 *En {dias_falta} días — {fecha.strftime('%A %d/%m')}*"
+            dia_es = DIAS_SEMANA.get(fecha.strftime("%A"), fecha.strftime("%A"))
+            encabezado = f"🟡 *En {dias_falta} días — {dia_es} {fecha.strftime('%d/%m')}*"
 
         lineas.append(encabezado)
         for t in items:
             lineas.append(f"  • *{t['materia']}*: {t['titulo']}")
-            if t.get("descripcion"):
-                lineas.append(f"    _{t['descripcion']}_")
         lineas.append("")
 
     lineas.append("—\n_Bot de deberes 🤖 · Esemtia_")
     return "\n".join(lineas)
 
 
+def formatear_whatsapp(tareas: list[dict]) -> str:
+    """Formato limpio para copiar y pegar en WhatsApp."""
+    hoy    = datetime.now(tz).date()
+    manana = hoy + timedelta(days=1)
+
+    if not tareas:
+        return "✅ No hay deberes para los próximos días."
+
+    por_fecha: dict = {}
+    for t in tareas:
+        por_fecha.setdefault(t["fecha"], []).append(t)
+
+    lineas = ["📚 *DEBERES PENDIENTES*\n"]
+    for fecha, items in sorted(por_fecha.items()):
+        if fecha == hoy:
+            encabezado = "⚠️ PARA HOY"
+        elif fecha == manana:
+            encabezado = "🔴 PARA MAÑANA"
+        else:
+            dias_falta = (fecha - hoy).days
+            dia_es = DIAS_SEMANA.get(fecha.strftime("%A"), fecha.strftime("%A"))
+            encabezado = f"🟡 {dia_es} {fecha.strftime('%d/%m')} (en {dias_falta} días)"
+
+        lineas.append(encabezado)
+        for t in items:
+            # Materia sin el horario (ej: "QUIMICA 12:05" → "QUIMICA")
+            materia_limpia = t['materia'].split(" ")[0] if t['materia'] else t['materia']
+            lineas.append(f"• {materia_limpia}: {t['titulo']}")
+        lineas.append("")
+
+    return "\n".join(lineas).strip()
+
+
 async def revisar_y_notificar(bot: Bot):
-    logger.info("⏰ Revisando deberes en Esemtia...")
+    logger.info("Revisando deberes en Esemtia...")
     try:
         scraper = EsemtiaScraper(ESEMTIA_USER, ESEMTIA_PASS)
         tareas  = await scraper.obtener_tareas_proximas(dias=7)
         mensaje = formatear_mensaje(tareas)
         await bot.send_message(chat_id=CHAT_ID, text=mensaje, parse_mode="Markdown")
-        logger.info("✅ Notificación enviada.")
+        logger.info("Notificacion enviada.")
     except Exception as e:
         logger.error(f"Error: {e}")
         await bot.send_message(
@@ -79,26 +116,45 @@ async def revisar_y_notificar(bot: Bot):
 async def cmd_start(update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "👋 ¡Hola! Soy tu bot de deberes.\n\n"
-        "/deberes — Ver deberes ahora mismo\n"
-        f"/start   — Este mensaje\n\n"
+        "/deberes  — Ver deberes ahora mismo\n"
+        "/whatsapp — Mensaje listo para copiar al grupo\n"
+        f"/start    — Este mensaje\n\n"
         f"⏰ Aviso automático todos los días a las {HORA_AVISO}"
     )
+
 
 async def cmd_deberes(update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🔍 Revisando Esemtia, dame un momento...")
     await revisar_y_notificar(context.bot)
 
 
+async def cmd_whatsapp(update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("🔍 Revisando Esemtia, dame un momento...")
+    try:
+        scraper = EsemtiaScraper(ESEMTIA_USER, ESEMTIA_PASS)
+        tareas  = await scraper.obtener_tareas_proximas(dias=7)
+        mensaje = formatear_whatsapp(tareas)
+        # Enviar en bloque de código para que sea fácil copiar
+        await update.message.reply_text(
+            f"📋 *Copia este mensaje para WhatsApp:*\n\n`{mensaje}`",
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        logger.error(f"Error: {e}")
+        await update.message.reply_text(f"⚠️ Error: `{e}`", parse_mode="Markdown")
+
+
 async def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
-    app.add_handler(CommandHandler("start",   cmd_start))
-    app.add_handler(CommandHandler("deberes", cmd_deberes))
+    app.add_handler(CommandHandler("start",    cmd_start))
+    app.add_handler(CommandHandler("deberes",  cmd_deberes))
+    app.add_handler(CommandHandler("whatsapp", cmd_whatsapp))
 
     hora, minuto = map(int, HORA_AVISO.split(":"))
     scheduler = AsyncIOScheduler(timezone=tz)
     scheduler.add_job(revisar_y_notificar, "cron", hour=hora, minute=minuto, args=[app.bot])
     scheduler.start()
-    logger.info(f"✅ Bot activo — aviso diario a las {HORA_AVISO} ({ZONA_HORARIA})")
+    logger.info(f"Bot activo — aviso diario a las {HORA_AVISO} ({ZONA_HORARIA})")
 
     await app.initialize()
     await app.start()
