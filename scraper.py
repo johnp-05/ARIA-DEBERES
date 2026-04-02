@@ -79,7 +79,7 @@ class EsemtiaScraper:
                     await page.wait_for_load_state("networkidle", timeout=10000)
 
                 html = await page.content()
-                logger.info(f"[Tareas] HTML (600 chars): {html[:600]}")
+                logger.info(f"[Tareas] HTML (3000 chars): {html[:3000]}")
                 return self._parsear_tareas(html, dias)
 
             except ValueError:
