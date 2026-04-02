@@ -1,6 +1,6 @@
 """
 Scraper Esemtia - URLs exactas confirmadas:
-  Login:  https://comunicacion.esemtia.ec/LoginEsemtia.aspx
+  Login:  https://edu.esemtia.ec/LoginEsemtia.aspx
   Tareas: https://comunicacion.esemtia.ec/Ejercicios.aspx
 """
 
@@ -13,7 +13,7 @@ from bs4 import BeautifulSoup
 
 logger = logging.getLogger(__name__)
 
-LOGIN_URL  = "https://comunicacion.esemtia.ec/LoginEsemtia.aspx?microsoft=False&google=False&microsoftEnfant=False&googleEnfant=False"
+LOGIN_URL  = "https://edu.esemtia.ec/LoginEsemtia.aspx?microsoft=False&google=False&microsoftEnfant=False&googleEnfant=False"
 TAREAS_URL = "https://comunicacion.esemtia.ec/Ejercicios.aspx"
 
 
