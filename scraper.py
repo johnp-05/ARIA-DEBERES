@@ -151,26 +151,7 @@ class EsemtiaScraper:
         logger.info(f"{len(tareas)} tarea(s) encontradas.")
         return tareas
 
-    def _extraer_descripcion(self, fila, soup: BeautifulSoup) -> str:
-        """Busca el detalle completo de la tarea en filas ocultas o elementos adyacentes."""
-        # Intentar con ID de fila (patrón tarea_X -> tareaContent_X)
-        fila_id = fila.get("id", "")
-        if fila_id:
-            contenido_id = fila_id.replace("tarea_", "tareaContent_").replace("row_", "content_")
-            contenido = soup.find(id=contenido_id)
-            if contenido:
-                texto = contenido.get_text(" ", strip=True)
-                if texto:
-                    return texto[:300]
-
-        # Buscar en la siguiente fila hermana (filas expansibles)
-        siguiente = fila.find_next_sibling("tr")
-        if siguiente:
-            clases = siguiente.get("class", [])
-            # Si la siguiente fila parece un detalle/descripcion
-            if any(c in ["detalle", "descripcion", "content", "expandido"] for c in clases):
-                return siguiente.get_text(" ", strip=True)[:300]
-
+    def _extraer_descripcion(self, fila, soup) -> str:
         return ""
 
     def _parsear_fecha(self, texto: str):
