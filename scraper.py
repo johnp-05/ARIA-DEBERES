@@ -47,14 +47,14 @@ class EsemtiaScraper:
 
                 # ── PASO 2: Pagina de seleccion -> WEB COMUNICACION ────────
                 if "edu.esemtia.ec" in page.url:
-                    logger.info("Pagina de seleccion detectada, navegando a WEB COMUNICACION...")
+                    logger.info("Pagina de seleccion, navegando a WEB COMUNICACION...")
                     try:
                         await page.wait_for_selector("text=WEB COMUNICACIÓN", timeout=8000)
                         await page.get_by_text("WEB COMUNICACIÓN").click()
                         await page.wait_for_url("*comunicacion.esemtia.ec*", timeout=15000)
                         logger.info(f"[Seleccion] URL: {page.url}")
                     except PWTimeout:
-                        logger.warning("Timeout en seleccion, yendo directo a comunicacion...")
+                        logger.warning("Timeout, yendo directo a comunicacion...")
                         await page.goto("https://comunicacion.esemtia.ec/", timeout=15000)
                         await page.wait_for_load_state("networkidle", timeout=15000)
 
@@ -83,7 +83,6 @@ class EsemtiaScraper:
                             continue
 
                 html = await page.content()
-                logger.info(f"[Tareas] HTML (3000 chars): {html[:3000]}")
                 return self._parsear_tareas(html, dias)
 
             except ValueError:
@@ -138,16 +137,41 @@ class EsemtiaScraper:
                 if not fecha_entrega or not (hoy <= fecha_entrega <= limite):
                     continue
 
+                # Buscar descripcion completa en elemento oculto adyacente
+                descripcion = self._extraer_descripcion(fila, soup)
+
                 tareas.append({
                     "fecha":       fecha_entrega,
                     "materia":     materia,
                     "titulo":      titulo,
-                    "descripcion": "",
+                    "descripcion": descripcion,
                 })
 
         tareas.sort(key=lambda t: t["fecha"])
-        logger.info(f"{len(tareas)} tarea(s) en los proximos {dias} dias.")
+        logger.info(f"{len(tareas)} tarea(s) encontradas.")
         return tareas
+
+    def _extraer_descripcion(self, fila, soup: BeautifulSoup) -> str:
+        """Busca el detalle completo de la tarea en filas ocultas o elementos adyacentes."""
+        # Intentar con ID de fila (patrón tarea_X -> tareaContent_X)
+        fila_id = fila.get("id", "")
+        if fila_id:
+            contenido_id = fila_id.replace("tarea_", "tareaContent_").replace("row_", "content_")
+            contenido = soup.find(id=contenido_id)
+            if contenido:
+                texto = contenido.get_text(" ", strip=True)
+                if texto:
+                    return texto[:300]
+
+        # Buscar en la siguiente fila hermana (filas expansibles)
+        siguiente = fila.find_next_sibling("tr")
+        if siguiente:
+            clases = siguiente.get("class", [])
+            # Si la siguiente fila parece un detalle/descripcion
+            if any(c in ["detalle", "descripcion", "content", "expandido"] for c in clases):
+                return siguiente.get_text(" ", strip=True)[:300]
+
+        return ""
 
     def _parsear_fecha(self, texto: str):
         texto = texto.strip()
