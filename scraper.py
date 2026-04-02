@@ -1,16 +1,13 @@
 """
-Scraper Esemtia con Playwright — maneja el login JavaScript correctamente.
-Flujo:
-  1. Login → ACCEDER (JavaScript)
-  2. Página intermedia → WEB COMUNICACIÓN
-  3. Pestaña Tareas → extraer tabla
+Scraper Esemtia con Playwright Async — compatible con asyncio.
 """
 
 import logging
 import re
 from datetime import datetime, timedelta
 
-from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
+from playwright.async_api import async_playwright, TimeoutError as PWTimeout
+from bs4 import BeautifulSoup
 
 logger = logging.getLogger(__name__)
 
@@ -22,63 +19,55 @@ class EsemtiaScraper:
         self.usuario  = usuario
         self.password = password
 
-    def obtener_tareas_proximas(self, dias: int = 7) -> list[dict]:
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
-            context = browser.new_context(
+    async def obtener_tareas_proximas(self, dias: int = 7) -> list[dict]:
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            context = await browser.new_context(
                 user_agent=(
                     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                     "AppleWebKit/537.36 (KHTML, like Gecko) "
                     "Chrome/124.0.0.0 Safari/537.36"
                 )
             )
-            page = context.new_page()
+            page = await context.new_page()
 
             try:
                 # ── PASO 1: Login ──────────────────────────────────────────
                 logger.info("🔐 Abriendo página de login...")
-                page.goto(LOGIN_URL, timeout=20000)
-                page.wait_for_load_state("networkidle", timeout=15000)
+                await page.goto(LOGIN_URL, timeout=20000)
+                await page.wait_for_load_state("networkidle", timeout=15000)
 
-                # Llenar usuario y contraseña
-                page.fill("input#txtBoxUsuario", self.usuario)
-                page.fill("input#txtBoxPassword", self.password)
+                await page.fill("input#txtBoxUsuario", self.usuario)
+                await page.fill("input#txtBoxPassword", self.password)
 
                 logger.info("📤 Enviando credenciales...")
-                # Clic en el botón ACCEDER (puede tener distintos selectores)
                 try:
-                    page.click("input[type='submit']", timeout=5000)
+                    await page.click("input[type='submit']", timeout=5000)
                 except PWTimeout:
                     try:
-                        page.click("button[type='submit']", timeout=5000)
+                        await page.click("button[type='submit']", timeout=5000)
                     except PWTimeout:
-                        # Buscar por texto "ACCEDER"
-                        page.get_by_text("ACCEDER").click(timeout=5000)
+                        await page.get_by_text("ACCEDER").click(timeout=5000)
 
-                page.wait_for_load_state("networkidle", timeout=15000)
+                await page.wait_for_load_state("networkidle", timeout=15000)
                 logger.info(f"[Login] URL tras clic: {page.url}")
 
                 # ── PASO 2: Página intermedia ──────────────────────────────
-                # Si hay selección de portal, elegir WEB COMUNICACIÓN
                 if "edu.esemtia.ec" in page.url:
-                    logger.info("🔀 Detectada página intermedia, buscando WEB COMUNICACIÓN...")
+                    logger.info("🔀 Página intermedia detectada, buscando WEB COMUNICACIÓN...")
                     try:
-                        # Buscar por texto que contenga "comunicaci"
-                        page.get_by_text(re.compile(r"comunicaci", re.IGNORECASE)).first.click(timeout=8000)
-                        page.wait_for_load_state("networkidle", timeout=15000)
-                        logger.info(f"[Selección] URL tras elegir portal: {page.url}")
+                        await page.get_by_text(re.compile(r"comunicaci", re.IGNORECASE)).first.click(timeout=8000)
+                        await page.wait_for_load_state("networkidle", timeout=15000)
+                        logger.info(f"[Selección] URL: {page.url}")
                     except PWTimeout:
-                        logger.warning("No encontré botón WEB COMUNICACIÓN, probando links...")
-                        # Buscar links que apunten a comunicacion.esemtia.ec
-                        links = page.locator("a[href*='comunicacion']").all()
+                        links = await page.locator("a[href*='comunicacion']").all()
                         if links:
-                            links[0].click()
-                            page.wait_for_load_state("networkidle", timeout=15000)
+                            await links[0].click()
+                            await page.wait_for_load_state("networkidle", timeout=15000)
                         else:
-                            page.goto("https://comunicacion.esemtia.ec/", timeout=15000)
-                            page.wait_for_load_state("networkidle", timeout=15000)
+                            await page.goto("https://comunicacion.esemtia.ec/", timeout=15000)
+                            await page.wait_for_load_state("networkidle", timeout=15000)
 
-                # Verificar login exitoso
                 if "login" in page.url.lower() and "edu.esemtia.ec" in page.url:
                     raise ValueError("❌ Login fallido: usuario o contraseña incorrectos.")
 
@@ -87,15 +76,15 @@ class EsemtiaScraper:
                 # ── PASO 3: Ir a Tareas ────────────────────────────────────
                 logger.info("📋 Buscando pestaña Tareas...")
                 try:
-                    page.get_by_text(re.compile(r"tareas", re.IGNORECASE)).first.click(timeout=8000)
-                    page.wait_for_load_state("networkidle", timeout=10000)
+                    await page.get_by_text(re.compile(r"^tareas$", re.IGNORECASE)).click(timeout=8000)
+                    await page.wait_for_load_state("networkidle", timeout=10000)
                     logger.info(f"[Tareas] URL: {page.url}")
                 except PWTimeout:
                     logger.warning("No encontré pestaña Tareas, probando URL directa...")
-                    page.goto("https://comunicacion.esemtia.ec/Tareas.aspx", timeout=15000)
-                    page.wait_for_load_state("networkidle", timeout=10000)
+                    await page.goto("https://comunicacion.esemtia.ec/Tareas.aspx", timeout=15000)
+                    await page.wait_for_load_state("networkidle", timeout=10000)
 
-                html = page.content()
+                html = await page.content()
                 logger.info(f"[Tareas] HTML (600 chars): {html[:600]}")
                 return self._parsear_tareas(html, dias)
 
@@ -105,11 +94,9 @@ class EsemtiaScraper:
                 logger.error(f"Error en Playwright: {e}")
                 raise
             finally:
-                browser.close()
+                await browser.close()
 
-    # ──────────────────────────────────────────────────────────────────────────
     def _parsear_tareas(self, html: str, dias: int) -> list[dict]:
-        from bs4 import BeautifulSoup
         soup   = BeautifulSoup(html, "html.parser")
         hoy    = datetime.now().date()
         limite = hoy + timedelta(days=dias)
@@ -122,12 +109,10 @@ class EsemtiaScraper:
                 if len(celdas) < 3:
                     continue
 
-                # Formato con clases CSS
                 materia_td       = fila.select_one("td.materiaClase")
                 titulo_td        = fila.select_one("td.tarea")
                 fecha_entrega_td = fila.select_one("td.fechaEntrega")
 
-                # Formato por posición (Materia | Tarea | Fecha | Fecha Entrega)
                 if not (materia_td and titulo_td and fecha_entrega_td):
                     if len(celdas) >= 4:
                         materia_td, titulo_td = celdas[0], celdas[1]
