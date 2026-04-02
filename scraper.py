@@ -1,207 +1,149 @@
 """
-Scraper Esemtia — flujo completo:
-  1. Login en edu.esemtia.ec/LoginEsemtia.aspx
-  2. Página intermedia → elegir "WEB COMUNICACIÓN"
-  3. Ir a Tareas en comunicacion.esemtia.ec
+Scraper Esemtia con Playwright — maneja el login JavaScript correctamente.
+Flujo:
+  1. Login → ACCEDER (JavaScript)
+  2. Página intermedia → WEB COMUNICACIÓN
+  3. Pestaña Tareas → extraer tabla
 """
 
 import logging
 import re
 from datetime import datetime, timedelta
 
-import requests
-from bs4 import BeautifulSoup
+from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
 
 logger = logging.getLogger(__name__)
 
 LOGIN_URL = "https://edu.esemtia.ec/LoginEsemtia.aspx?microsoft=False&google=False&microsoftEnfant=False&googleEnfant=False"
-BASE_COM  = "https://comunicacion.esemtia.ec"
 
 
 class EsemtiaScraper:
     def __init__(self, usuario: str, password: str):
         self.usuario  = usuario
         self.password = password
-        self.session  = requests.Session()
-        self.session.headers.update({
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/124.0.0.0 Safari/537.36"
-            ),
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "es-EC,es;q=0.9,en;q=0.8",
-        })
-        self._login()
 
-    # ──────────────────────────────────────────────────────────────────────────
-    # PASO 1 — Login
-    # ──────────────────────────────────────────────────────────────────────────
-    def _login(self):
-        resp = self.session.get(LOGIN_URL, timeout=15)
-        resp.raise_for_status()
-        soup = BeautifulSoup(resp.text, "html.parser")
-
-        # Recoger todos los campos ocultos del form ASP.NET
-        payload = {}
-        form = soup.find("form", {"id": "form1"}) or soup.find("form")
-        if form:
-            for inp in form.find_all("input"):
-                name = inp.get("name", "")
-                tipo = inp.get("type", "text").lower()
-                if name and tipo != "password":
-                    payload[name] = inp.get("value", "")
-
-        logger.info(f"Campos del form: {list(payload.keys())}")
-
-        # Credenciales
-        payload["txtBoxUsuario"]  = self.usuario
-        payload["txtBoxPassword"] = self.password
-
-        # POST login
-        resp = self.session.post(
-            LOGIN_URL,
-            data=payload,
-            headers={
-                "Referer": LOGIN_URL,
-                "Origin": "https://edu.esemtia.ec",
-                "Content-Type": "application/x-www-form-urlencoded",
-            },
-            timeout=15,
-            allow_redirects=True,
-        )
-        resp.raise_for_status()
-
-        logger.info(f"[Login] URL tras POST: {resp.url}")
-        logger.info(f"[Login] HTML (600 chars): {resp.text[:600]}")
-
-        # ── PASO 2 — Página intermedia de selección ───────────────────────────
-        # Si todavía estamos en edu.esemtia.ec y hay botones de selección,
-        # buscamos el enlace a "WEB COMUNICACIÓN" y lo seguimos
-        if "edu.esemtia.ec" in resp.url:
-            resp = self._elegir_web_comunicacion(resp)
-
-        # Verificar que llegamos a comunicacion.esemtia.ec
-        if "edu.esemtia.ec" in resp.url and "login" in resp.url.lower():
-            raise ValueError("❌ Login fallido: usuario o contraseña incorrectos.")
-
-        logger.info(f"✅ Sesión iniciada → {resp.url}")
-
-    # ──────────────────────────────────────────────────────────────────────────
-    # PASO 2 — Elegir "WEB COMUNICACIÓN" en la página intermedia
-    # ──────────────────────────────────────────────────────────────────────────
-    def _elegir_web_comunicacion(self, resp: requests.Response) -> requests.Response:
-        soup = BeautifulSoup(resp.text, "html.parser")
-
-        # Buscar enlace o botón que apunte a comunicacion.esemtia.ec
-        # o que contenga el texto "comunicación" / "WEB"
-        url_destino = None
-
-        for tag in soup.find_all(["a", "input", "button"]):
-            href  = tag.get("href", "") or tag.get("onclick", "") or tag.get("value", "")
-            texto = tag.get_text(strip=True).lower()
-            if "comunicaci" in texto or "comunicacion" in href.lower() or "comunicacion.esemtia" in href.lower():
-                if href.startswith("http"):
-                    url_destino = href
-                elif href.startswith("/"):
-                    url_destino = "https://edu.esemtia.ec" + href
-                logger.info(f"[Selección] Enlace WEB COMUNICACIÓN encontrado: {url_destino}")
-                break
-
-        # Si no encontramos el enlace por texto, ir directamente
-        if not url_destino:
-            logger.warning("[Selección] No encontré enlace a WEB COMUNICACIÓN, probando URL directa")
-            url_destino = BASE_COM + "/"
-
-        resp2 = self.session.get(url_destino, timeout=15, allow_redirects=True)
-        resp2.raise_for_status()
-        logger.info(f"[Selección] URL tras elegir WEB COMUNICACIÓN: {resp2.url}")
-        return resp2
-
-    # ──────────────────────────────────────────────────────────────────────────
-    # PASO 3 — Obtener tareas
-    # ──────────────────────────────────────────────────────────────────────────
     def obtener_tareas_proximas(self, dias: int = 7) -> list[dict]:
-        # La pestaña "Tareas" en comunicacion.esemtia.ec
-        # Probamos las URLs más comunes
-        urls_candidatas = [
-            BASE_COM + "/Tareas.aspx",
-            BASE_COM + "/Ejercicios.aspx",
-            BASE_COM + "/Alumno/Tareas.aspx",
-            BASE_COM + "/Comunicacion/Tareas.aspx",
-        ]
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            context = browser.new_context(
+                user_agent=(
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/124.0.0.0 Safari/537.36"
+                )
+            )
+            page = context.new_page()
 
-        html = None
-        for url in urls_candidatas:
             try:
-                resp = self.session.get(url, timeout=15, allow_redirects=True)
-                if resp.status_code == 200 and len(resp.text) > 500:
-                    logger.info(f"✅ Página de tareas encontrada: {resp.url}")
-                    html = resp.text
-                    break
+                # ── PASO 1: Login ──────────────────────────────────────────
+                logger.info("🔐 Abriendo página de login...")
+                page.goto(LOGIN_URL, timeout=20000)
+                page.wait_for_load_state("networkidle", timeout=15000)
+
+                # Llenar usuario y contraseña
+                page.fill("input#txtBoxUsuario", self.usuario)
+                page.fill("input#txtBoxPassword", self.password)
+
+                logger.info("📤 Enviando credenciales...")
+                # Clic en el botón ACCEDER (puede tener distintos selectores)
+                try:
+                    page.click("input[type='submit']", timeout=5000)
+                except PWTimeout:
+                    try:
+                        page.click("button[type='submit']", timeout=5000)
+                    except PWTimeout:
+                        # Buscar por texto "ACCEDER"
+                        page.get_by_text("ACCEDER").click(timeout=5000)
+
+                page.wait_for_load_state("networkidle", timeout=15000)
+                logger.info(f"[Login] URL tras clic: {page.url}")
+
+                # ── PASO 2: Página intermedia ──────────────────────────────
+                # Si hay selección de portal, elegir WEB COMUNICACIÓN
+                if "edu.esemtia.ec" in page.url:
+                    logger.info("🔀 Detectada página intermedia, buscando WEB COMUNICACIÓN...")
+                    try:
+                        # Buscar por texto que contenga "comunicaci"
+                        page.get_by_text(re.compile(r"comunicaci", re.IGNORECASE)).first.click(timeout=8000)
+                        page.wait_for_load_state("networkidle", timeout=15000)
+                        logger.info(f"[Selección] URL tras elegir portal: {page.url}")
+                    except PWTimeout:
+                        logger.warning("No encontré botón WEB COMUNICACIÓN, probando links...")
+                        # Buscar links que apunten a comunicacion.esemtia.ec
+                        links = page.locator("a[href*='comunicacion']").all()
+                        if links:
+                            links[0].click()
+                            page.wait_for_load_state("networkidle", timeout=15000)
+                        else:
+                            page.goto("https://comunicacion.esemtia.ec/", timeout=15000)
+                            page.wait_for_load_state("networkidle", timeout=15000)
+
+                # Verificar login exitoso
+                if "login" in page.url.lower() and "edu.esemtia.ec" in page.url:
+                    raise ValueError("❌ Login fallido: usuario o contraseña incorrectos.")
+
+                logger.info(f"✅ Login exitoso → {page.url}")
+
+                # ── PASO 3: Ir a Tareas ────────────────────────────────────
+                logger.info("📋 Buscando pestaña Tareas...")
+                try:
+                    page.get_by_text(re.compile(r"tareas", re.IGNORECASE)).first.click(timeout=8000)
+                    page.wait_for_load_state("networkidle", timeout=10000)
+                    logger.info(f"[Tareas] URL: {page.url}")
+                except PWTimeout:
+                    logger.warning("No encontré pestaña Tareas, probando URL directa...")
+                    page.goto("https://comunicacion.esemtia.ec/Tareas.aspx", timeout=15000)
+                    page.wait_for_load_state("networkidle", timeout=10000)
+
+                html = page.content()
+                logger.info(f"[Tareas] HTML (600 chars): {html[:600]}")
+                return self._parsear_tareas(html, dias)
+
+            except ValueError:
+                raise
             except Exception as e:
-                logger.warning(f"URL {url} falló: {e}")
+                logger.error(f"Error en Playwright: {e}")
+                raise
+            finally:
+                browser.close()
 
-        if not html:
-            logger.warning("⚠️ No se encontró la página de tareas.")
-            return []
-
-        logger.info(f"HTML tareas (600 chars): {html[:600]}")
-        return self._parsear_tareas(html, dias)
-
-    # ──────────────────────────────────────────────────────────────────────────
-    # Parser — compatible con la tabla vista en pantalla
-    # Columnas: Materia/Clase | Tarea | Fecha | Fecha Entrega
     # ──────────────────────────────────────────────────────────────────────────
     def _parsear_tareas(self, html: str, dias: int) -> list[dict]:
+        from bs4 import BeautifulSoup
         soup   = BeautifulSoup(html, "html.parser")
         hoy    = datetime.now().date()
         limite = hoy + timedelta(days=dias)
         tareas = []
         vistas = set()
 
-        # Buscar tablas que contengan "Fecha Entrega" en el encabezado
         for tabla in soup.find_all("table"):
-            encabezados = [th.get_text(strip=True).lower() for th in tabla.find_all("th")]
-            tiene_fecha_entrega = any("entrega" in e for e in encabezados)
-            tiene_materia       = any("materia" in e for e in encabezados)
-
-            if not (tiene_fecha_entrega or tiene_materia):
-                # También probar con clases CSS del scraper original
-                pass
-
             for fila in tabla.find_all("tr"):
                 celdas = fila.find_all("td")
                 if len(celdas) < 3:
                     continue
 
-                # Intentar con clases CSS (formato original)
+                # Formato con clases CSS
                 materia_td       = fila.select_one("td.materiaClase")
                 titulo_td        = fila.select_one("td.tarea")
                 fecha_entrega_td = fila.select_one("td.fechaEntrega")
 
-                # Si no hay clases, usar posición por columna según lo visto en pantalla
-                # Columnas: Materia/Clase(0) | Tarea(1) | Fecha(2) | Fecha Entrega(3)
+                # Formato por posición (Materia | Tarea | Fecha | Fecha Entrega)
                 if not (materia_td and titulo_td and fecha_entrega_td):
                     if len(celdas) >= 4:
-                        materia_td       = celdas[0]
-                        titulo_td        = celdas[1]
-                        fecha_entrega_td = celdas[3]  # Fecha Entrega es la 4ª columna
+                        materia_td, titulo_td = celdas[0], celdas[1]
+                        fecha_entrega_td = celdas[3]
                     elif len(celdas) == 3:
-                        materia_td       = celdas[0]
-                        titulo_td        = celdas[1]
-                        fecha_entrega_td = celdas[2]
+                        materia_td, titulo_td, fecha_entrega_td = celdas[0], celdas[1], celdas[2]
                     else:
                         continue
 
-                materia = materia_td.get_text(strip=True)
-                titulo  = titulo_td.get_text(strip=True)
+                materia     = materia_td.get_text(strip=True)
+                titulo      = titulo_td.get_text(strip=True)
                 fecha_texto = fecha_entrega_td.get_text(strip=True)
 
-                # Ignorar filas vacías o de encabezado
                 if not materia or not titulo or not fecha_texto:
                     continue
-                if materia.lower() in ("materia", "materia/clase", "clase"):
+                if materia.lower() in ("materia", "materia/clase", "clase", "tarea", "fecha"):
                     continue
 
                 clave = f"{materia}|{titulo}"
