@@ -5,7 +5,6 @@ Scraper Esemtia con Playwright Async + resumen con Gemini.
 import logging
 import os
 import re
-import json
 from datetime import datetime, timedelta
 
 import google.generativeai as genai
@@ -16,7 +15,6 @@ logger = logging.getLogger(__name__)
 
 LOGIN_URL = "https://edu.esemtia.ec/LoginEsemtia.aspx?microsoft=False&google=False&microsoftEnfant=False&googleEnfant=False"
 
-# Configurar Gemini
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
@@ -25,24 +23,25 @@ else:
     gemini = None
 
 
-def resumir_tarea(materia: str, texto: str) -> str:
-    """Usa Gemini para resumir el enunciado de una tarea en una línea."""
-    if not gemini or not texto or len(texto) < 20:
-        return texto
+def resumir_tarea(materia: str, titulo: str, descripcion: str) -> str:
+    """Usa Gemini para resumir el enunciado de una tarea en una línea clara."""
+    if not gemini:
+        return titulo
+    texto = f"{titulo} {descripcion}".strip()
+    if not texto or len(texto) < 5:
+        return titulo
     try:
         prompt = (
-            f"Eres un asistente escolar. Resume en UNA sola frase corta y clara "
-            f"(máximo 15 palabras) qué hay que hacer para esta tarea de {materia}. "
-            f"Solo di qué hay que hacer, sin saludos ni explicaciones extra.\n\n"
+            f"Eres un asistente escolar. Resume en UNA frase corta y clara "
+            f"(máximo 12 palabras) qué hay que hacer para esta tarea de {materia}. "
+            f"Solo di qué hay que hacer, sin saludos ni fechas ni nombres de materia.\n\n"
             f"Tarea: {texto}"
         )
         resp = gemini.generate_content(prompt)
-        resumen = resp.text.strip().strip('"').strip("'")
-        logger.info(f"Gemini resumió: {resumen}")
-        return resumen
+        return resp.text.strip().strip('"').strip("'")
     except Exception as e:
-        logger.warning(f"Error con Gemini: {e}")
-        return texto
+        logger.warning(f"Error Gemini: {e}")
+        return titulo
 
 
 class EsemtiaScraper:
@@ -70,7 +69,6 @@ class EsemtiaScraper:
                 await page.fill("input#txtBoxPassword", self.password)
                 await page.press("input#txtBoxPassword", "Enter")
                 await page.wait_for_load_state("networkidle", timeout=15000)
-                logger.info(f"[Login] URL: {page.url}")
 
                 # ── PASO 2: WEB COMUNICACION ───────────────────────────────
                 if "edu.esemtia.ec" in page.url:
@@ -99,8 +97,8 @@ class EsemtiaScraper:
                         except Exception:
                             continue
 
-                logger.info(f"[Tareas] URL: {page.url}")
-                return await self._extraer_con_expansion(page, dias)
+                # ── PASO 4: Expandir cada fila y leer contenido ────────────
+                return await self._extraer_tareas(page, dias)
 
             except ValueError:
                 raise
@@ -110,7 +108,7 @@ class EsemtiaScraper:
             finally:
                 await browser.close()
 
-    async def _extraer_con_expansion(self, page, dias: int) -> list[dict]:
+    async def _extraer_tareas(self, page, dias: int) -> list[dict]:
         hoy    = datetime.now().date()
         limite = hoy + timedelta(days=dias)
         tareas = []
@@ -122,6 +120,7 @@ class EsemtiaScraper:
         filas_validas = []
         for tabla in soup.find_all("table"):
             for fila in tabla.find_all("tr"):
+                # Solo filas con clase "contenido" o similares
                 celdas = fila.find_all("td")
                 if len(celdas) < 3:
                     continue
@@ -148,6 +147,10 @@ class EsemtiaScraper:
                 if materia.lower() in ("materia", "materia/clase", "clase", "tarea", "fecha"):
                     continue
 
+                # Ignorar si el titulo parece metadata de tabla
+                if re.search(r"\d{2}-\d{2}-\d{4}", titulo):
+                    continue
+
                 clave = f"{materia}|{titulo[:20]}"
                 if clave in vistas:
                     continue
@@ -164,54 +167,50 @@ class EsemtiaScraper:
                     "fila_id": fila.get("id", ""),
                 })
 
-        # Expandir cada fila y leer contenido completo
+        # Expandir cada fila para obtener descripcion completa
         for item in filas_validas:
-            titulo_completo = item["titulo"]
             descripcion = ""
 
             if item["fila_id"]:
                 try:
-                    fila_elem = page.locator(f"#{item['fila_id']}")
-                    await fila_elem.click(timeout=5000)
-                    await page.wait_for_timeout(1000)
+                    # Clic para expandir
+                    await page.locator(f"#{item['fila_id']}").click(timeout=5000)
+                    await page.wait_for_timeout(1200)
 
                     html_exp = await page.content()
                     soup_exp = BeautifulSoup(html_exp, "html.parser")
 
-                    content_id = item["fila_id"].replace("tarea_", "tareaContent_").replace("row_", "detail_")
-                    content_div = soup_exp.find(id=content_id)
+                    # Buscar fila de detalle con ID relacionado
+                    for patron in [
+                        item["fila_id"].replace("tarea_", "tareaContent_"),
+                        item["fila_id"].replace("tarea_", "detalle_"),
+                        item["fila_id"] + "_content",
+                        item["fila_id"] + "_detail",
+                    ]:
+                        content = soup_exp.find(id=patron)
+                        if content:
+                            texto = content.get_text(" ", strip=True)
+                            # Filtrar que no sea metadata de tabla
+                            if texto and len(texto) > 10 and not re.search(r"\d{2}-\d{2}-\d{4}.*\d{2}-\d{2}-\d{4}", texto):
+                                descripcion = texto[:500]
+                                logger.info(f"Descripcion encontrada (id={patron}): {descripcion[:80]}")
+                                break
 
-                    if content_div:
-                        texto = content_div.get_text(" ", strip=True)
-                        if texto and len(texto) > len(titulo_completo):
-                            lineas = [l.strip() for l in texto.split("\n") if l.strip()]
-                            if lineas:
-                                titulo_completo = lineas[0]
-                                descripcion = " ".join(lineas[1:])[:500] if len(lineas) > 1 else ""
-                    else:
-                        fila_sig = soup_exp.find(id=item["fila_id"])
-                        if fila_sig:
-                            sig = fila_sig.find_next_sibling()
-                            if sig:
-                                texto = sig.get_text(" ", strip=True)
-                                if texto and len(texto) > 10:
-                                    descripcion = texto[:500]
-
-                    # Resumir con Gemini el texto completo
-                    texto_completo = f"{titulo_completo} {descripcion}".strip()
-                    titulo_resumido = resumir_tarea(item["materia"], texto_completo)
-                    titulo_completo = titulo_resumido
-
-                    await fila_elem.click(timeout=3000)
+                    # Cerrar expansion
+                    await page.locator(f"#{item['fila_id']}").click(timeout=3000)
                     await page.wait_for_timeout(500)
 
                 except Exception as ex:
-                    logger.warning(f"No pude expandir fila {item['fila_id']}: {ex}")
+                    logger.warning(f"No pude expandir {item['fila_id']}: {ex}")
+
+            # Resumir con Gemini
+            titulo_final = resumir_tarea(item["materia"], item["titulo"], descripcion)
+            logger.info(f"Final: {item['materia']} → {titulo_final}")
 
             tareas.append({
                 "fecha":       item["fecha"],
                 "materia":     item["materia"],
-                "titulo":      titulo_completo,
+                "titulo":      titulo_final,
                 "descripcion": "",
             })
 
