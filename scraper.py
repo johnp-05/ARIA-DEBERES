@@ -1,5 +1,5 @@
 """
-Scraper Esemtia con Playwright Async — compatible con asyncio.
+Scraper Esemtia con Playwright Async — obtiene titulo completo entrando a cada tarea.
 """
 
 import logging
@@ -33,28 +33,21 @@ class EsemtiaScraper:
 
             try:
                 # ── PASO 1: Login ──────────────────────────────────────────
-                logger.info("Abriendo pagina de login...")
                 await page.goto(LOGIN_URL, timeout=20000)
                 await page.wait_for_load_state("networkidle", timeout=15000)
-
                 await page.fill("input#txtBoxUsuario", self.usuario)
                 await page.fill("input#txtBoxPassword", self.password)
-
-                logger.info("Enviando credenciales con Enter...")
                 await page.press("input#txtBoxPassword", "Enter")
                 await page.wait_for_load_state("networkidle", timeout=15000)
                 logger.info(f"[Login] URL: {page.url}")
 
-                # ── PASO 2: Pagina de seleccion -> WEB COMUNICACION ────────
+                # ── PASO 2: WEB COMUNICACION ───────────────────────────────
                 if "edu.esemtia.ec" in page.url:
-                    logger.info("Pagina de seleccion, navegando a WEB COMUNICACION...")
                     try:
                         await page.wait_for_selector("text=WEB COMUNICACIÓN", timeout=8000)
                         await page.get_by_text("WEB COMUNICACIÓN").click()
                         await page.wait_for_url("*comunicacion.esemtia.ec*", timeout=15000)
-                        logger.info(f"[Seleccion] URL: {page.url}")
                     except PWTimeout:
-                        logger.warning("Timeout, yendo directo a comunicacion...")
                         await page.goto("https://comunicacion.esemtia.ec/", timeout=15000)
                         await page.wait_for_load_state("networkidle", timeout=15000)
 
@@ -64,26 +57,24 @@ class EsemtiaScraper:
                 logger.info(f"En portal: {page.url}")
 
                 # ── PASO 3: Ir a Tareas ────────────────────────────────────
-                logger.info("Buscando pestana Tareas...")
                 try:
                     await page.wait_for_selector("text=Tareas", timeout=8000)
                     await page.get_by_text("Tareas").first.click()
                     await page.wait_for_load_state("networkidle", timeout=10000)
-                    logger.info(f"[Tareas] URL: {page.url}")
                 except PWTimeout:
-                    logger.warning("No encontre pestana Tareas, probando URLs...")
                     for path in ["Ejercicios.aspx", "Alumno/Tareas.aspx", "Default.aspx"]:
                         try:
-                            url = f"https://comunicacion.esemtia.ec/{path}"
-                            r = await page.goto(url, timeout=10000)
+                            r = await page.goto(f"https://comunicacion.esemtia.ec/{path}", timeout=10000)
                             if r and r.status == 200:
-                                logger.info(f"[Tareas] URL OK: {url}")
                                 break
                         except Exception:
                             continue
 
-                html = await page.content()
-                return self._parsear_tareas(html, dias)
+                tareas_url = page.url
+                logger.info(f"[Tareas] URL: {tareas_url}")
+
+                # ── PASO 4: Parsear tabla y entrar a cada tarea ────────────
+                return await self._extraer_tareas(page, tareas_url, dias)
 
             except ValueError:
                 raise
@@ -93,13 +84,17 @@ class EsemtiaScraper:
             finally:
                 await browser.close()
 
-    def _parsear_tareas(self, html: str, dias: int) -> list[dict]:
-        soup   = BeautifulSoup(html, "html.parser")
+    async def _extraer_tareas(self, page, tareas_url: str, dias: int) -> list[dict]:
         hoy    = datetime.now().date()
         limite = hoy + timedelta(days=dias)
         tareas = []
         vistas = set()
 
+        html = await page.content()
+        soup = BeautifulSoup(html, "html.parser")
+
+        # Recopilar info básica de la tabla primero
+        candidatas = []
         for tabla in soup.find_all("table"):
             for fila in tabla.find_all("tr"):
                 celdas = fila.find_all("td")
@@ -137,22 +132,65 @@ class EsemtiaScraper:
                 if not fecha_entrega or not (hoy <= fecha_entrega <= limite):
                     continue
 
-                # Buscar descripcion completa en elemento oculto adyacente
-                descripcion = self._extraer_descripcion(fila, soup)
+                # Buscar link dentro de la celda del título
+                link = titulo_td.find("a")
+                href = link.get("href", "") if link else ""
 
-                tareas.append({
-                    "fecha":       fecha_entrega,
-                    "materia":     materia,
-                    "titulo":      titulo,
-                    "descripcion": descripcion,
+                candidatas.append({
+                    "fecha":   fecha_entrega,
+                    "materia": materia,
+                    "titulo":  titulo,
+                    "href":    href,
                 })
+
+        # Ahora entrar a cada tarea para obtener título completo
+        for c in candidatas:
+            titulo_completo = c["titulo"]
+            descripcion = ""
+
+            if c["href"]:
+                try:
+                    url_detalle = c["href"] if c["href"].startswith("http") else f"https://comunicacion.esemtia.ec/{c['href']}"
+                    await page.goto(url_detalle, timeout=10000)
+                    await page.wait_for_load_state("networkidle", timeout=8000)
+
+                    detalle_html = await page.content()
+                    detalle_soup = BeautifulSoup(detalle_html, "html.parser")
+
+                    # Buscar título completo
+                    for sel in ["h1", "h2", ".titulo", ".tituloTarea", "#lblTitulo", ".tarea"]:
+                        elem = detalle_soup.select_one(sel)
+                        if elem:
+                            texto = elem.get_text(strip=True)
+                            if texto and len(texto) > 3:
+                                titulo_completo = texto
+                                break
+
+                    # Buscar descripción
+                    for sel in [".descripcion", ".detalle", "#lblDescripcion", "p"]:
+                        elem = detalle_soup.select_one(sel)
+                        if elem:
+                            texto = elem.get_text(strip=True)
+                            if texto and len(texto) > 5:
+                                descripcion = texto[:300]
+                                break
+
+                    logger.info(f"Detalle: {titulo_completo[:60]}")
+                    await page.goto(tareas_url, timeout=10000)
+                    await page.wait_for_load_state("networkidle", timeout=8000)
+                except Exception as ex:
+                    logger.warning(f"No pude entrar al detalle: {ex}")
+
+            tareas.append({
+                "fecha":       c["fecha"],
+                "materia":     c["materia"],
+                "titulo":      titulo_completo,
+                "descripcion": descripcion,
+            })
 
         tareas.sort(key=lambda t: t["fecha"])
         logger.info(f"{len(tareas)} tarea(s) encontradas.")
         return tareas
-
-    def _extraer_descripcion(self, fila, soup) -> str:
-        return ""
 
     def _parsear_fecha(self, texto: str):
         texto = texto.strip()
