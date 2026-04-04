@@ -2,6 +2,7 @@
 Scraper Esemtia con Playwright Async + resumen con Gemini.
 """
 
+import asyncio
 import logging
 import os
 import re
@@ -23,7 +24,7 @@ else:
     gemini = None
 
 
-def resumir_tarea(materia: str, titulo: str, descripcion: str) -> str:
+async def resumir_tarea(materia: str, titulo: str, descripcion: str) -> str:
     """Usa Gemini para resumir el enunciado de una tarea en una línea clara."""
     if not gemini:
         return titulo
@@ -37,7 +38,7 @@ def resumir_tarea(materia: str, titulo: str, descripcion: str) -> str:
             f"Solo di qué hay que hacer, sin saludos ni fechas ni nombres de materia.\n\n"
             f"Tarea: {texto}"
         )
-        resp = gemini.generate_content(prompt)
+        resp = await asyncio.to_thread(gemini.generate_content, prompt)
         return resp.text.strip().strip('"').strip("'")
     except Exception as e:
         logger.warning(f"Error Gemini: {e}")
@@ -204,7 +205,7 @@ class EsemtiaScraper:
                     logger.warning(f"No pude expandir {item['fila_id']}: {ex}")
 
             # Resumir con Gemini
-            titulo_final = resumir_tarea(item["materia"], item["titulo"], descripcion)
+            titulo_final = await resumir_tarea(item["materia"], item["titulo"], descripcion)
             logger.info(f"Final: {item['materia']} → {titulo_final}")
 
             tareas.append({
