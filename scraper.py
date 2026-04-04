@@ -1,18 +1,48 @@
 """
-Scraper Esemtia con Playwright Async.
-Hace clic en cada fila para expandir y leer el titulo completo.
+Scraper Esemtia con Playwright Async + resumen con Gemini.
 """
 
 import logging
+import os
 import re
+import json
 from datetime import datetime, timedelta
 
+import google.generativeai as genai
 from playwright.async_api import async_playwright, TimeoutError as PWTimeout
 from bs4 import BeautifulSoup
 
 logger = logging.getLogger(__name__)
 
 LOGIN_URL = "https://edu.esemtia.ec/LoginEsemtia.aspx?microsoft=False&google=False&microsoftEnfant=False&googleEnfant=False"
+
+# Configurar Gemini
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+if GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
+    gemini = genai.GenerativeModel("gemini-2.0-flash")
+else:
+    gemini = None
+
+
+def resumir_tarea(materia: str, texto: str) -> str:
+    """Usa Gemini para resumir el enunciado de una tarea en una línea."""
+    if not gemini or not texto or len(texto) < 20:
+        return texto
+    try:
+        prompt = (
+            f"Eres un asistente escolar. Resume en UNA sola frase corta y clara "
+            f"(máximo 15 palabras) qué hay que hacer para esta tarea de {materia}. "
+            f"Solo di qué hay que hacer, sin saludos ni explicaciones extra.\n\n"
+            f"Tarea: {texto}"
+        )
+        resp = gemini.generate_content(prompt)
+        resumen = resp.text.strip().strip('"').strip("'")
+        logger.info(f"Gemini resumió: {resumen}")
+        return resumen
+    except Exception as e:
+        logger.warning(f"Error con Gemini: {e}")
+        return texto
 
 
 class EsemtiaScraper:
@@ -70,8 +100,6 @@ class EsemtiaScraper:
                             continue
 
                 logger.info(f"[Tareas] URL: {page.url}")
-
-                # ── PASO 4: Expandir cada tarea y leer contenido completo ──
                 return await self._extraer_con_expansion(page, dias)
 
             except ValueError:
@@ -88,13 +116,12 @@ class EsemtiaScraper:
         tareas = []
         vistas = set()
 
-        # Primero leer la tabla para saber cuántas filas hay
         html = await page.content()
         soup = BeautifulSoup(html, "html.parser")
 
         filas_validas = []
         for tabla in soup.find_all("table"):
-            for i, fila in enumerate(tabla.find_all("tr")):
+            for fila in tabla.find_all("tr"):
                 celdas = fila.find_all("td")
                 if len(celdas) < 3:
                     continue
@@ -130,55 +157,51 @@ class EsemtiaScraper:
                 if not fecha_entrega or not (hoy <= fecha_entrega <= limite):
                     continue
 
-                fila_id = fila.get("id", "")
                 filas_validas.append({
                     "fecha":   fecha_entrega,
                     "materia": materia,
                     "titulo":  titulo,
-                    "fila_id": fila_id,
+                    "fila_id": fila.get("id", ""),
                 })
 
-        # Ahora hacer clic en cada fila para expandirla y leer el contenido completo
+        # Expandir cada fila y leer contenido completo
         for item in filas_validas:
             titulo_completo = item["titulo"]
             descripcion = ""
 
             if item["fila_id"]:
                 try:
-                    # Hacer clic en la fila para expandirla
                     fila_elem = page.locator(f"#{item['fila_id']}")
                     await fila_elem.click(timeout=5000)
-                    await page.wait_for_timeout(1000)  # esperar animacion
+                    await page.wait_for_timeout(1000)
 
-                    # Leer el HTML actualizado
                     html_exp = await page.content()
                     soup_exp = BeautifulSoup(html_exp, "html.parser")
 
-                    # Buscar la fila de contenido expandido (suele tener ID relacionado)
                     content_id = item["fila_id"].replace("tarea_", "tareaContent_").replace("row_", "detail_")
                     content_div = soup_exp.find(id=content_id)
 
                     if content_div:
                         texto = content_div.get_text(" ", strip=True)
                         if texto and len(texto) > len(titulo_completo):
-                            # Separar titulo de descripcion si es posible
                             lineas = [l.strip() for l in texto.split("\n") if l.strip()]
                             if lineas:
                                 titulo_completo = lineas[0]
-                                descripcion = " ".join(lineas[1:])[:300] if len(lineas) > 1 else ""
+                                descripcion = " ".join(lineas[1:])[:500] if len(lineas) > 1 else ""
                     else:
-                        # Buscar cualquier elemento nuevo que aparecio tras el clic
-                        fila_siguiente = soup_exp.find(id=item["fila_id"])
-                        if fila_siguiente:
-                            sig = fila_siguiente.find_next_sibling()
+                        fila_sig = soup_exp.find(id=item["fila_id"])
+                        if fila_sig:
+                            sig = fila_sig.find_next_sibling()
                             if sig:
                                 texto = sig.get_text(" ", strip=True)
                                 if texto and len(texto) > 10:
-                                    descripcion = texto[:300]
+                                    descripcion = texto[:500]
 
-                    logger.info(f"Tarea: {titulo_completo[:80]}")
+                    # Resumir con Gemini el texto completo
+                    texto_completo = f"{titulo_completo} {descripcion}".strip()
+                    titulo_resumido = resumir_tarea(item["materia"], texto_completo)
+                    titulo_completo = titulo_resumido
 
-                    # Cerrar expansion (segundo clic)
                     await fila_elem.click(timeout=3000)
                     await page.wait_for_timeout(500)
 
@@ -189,7 +212,7 @@ class EsemtiaScraper:
                 "fecha":       item["fecha"],
                 "materia":     item["materia"],
                 "titulo":      titulo_completo,
-                "descripcion": descripcion,
+                "descripcion": "",
             })
 
         tareas.sort(key=lambda t: t["fecha"])
