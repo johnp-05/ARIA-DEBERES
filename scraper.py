@@ -1,5 +1,6 @@
 """
-Scraper Esemtia con Playwright Async — obtiene titulo completo entrando a cada tarea.
+Scraper Esemtia con Playwright Async.
+Hace clic en cada fila para expandir y leer el titulo completo.
 """
 
 import logging
@@ -52,9 +53,7 @@ class EsemtiaScraper:
                         await page.wait_for_load_state("networkidle", timeout=15000)
 
                 if "login" in page.url.lower() and "edu.esemtia.ec" in page.url:
-                    raise ValueError("Login fallido: usuario o contrasena incorrectos.")
-
-                logger.info(f"En portal: {page.url}")
+                    raise ValueError("Login fallido.")
 
                 # ── PASO 3: Ir a Tareas ────────────────────────────────────
                 try:
@@ -62,7 +61,7 @@ class EsemtiaScraper:
                     await page.get_by_text("Tareas").first.click()
                     await page.wait_for_load_state("networkidle", timeout=10000)
                 except PWTimeout:
-                    for path in ["Ejercicios.aspx", "Alumno/Tareas.aspx", "Default.aspx"]:
+                    for path in ["Ejercicios.aspx", "Alumno/Tareas.aspx"]:
                         try:
                             r = await page.goto(f"https://comunicacion.esemtia.ec/{path}", timeout=10000)
                             if r and r.status == 200:
@@ -70,33 +69,32 @@ class EsemtiaScraper:
                         except Exception:
                             continue
 
-                tareas_url = page.url
-                logger.info(f"[Tareas] URL: {tareas_url}")
+                logger.info(f"[Tareas] URL: {page.url}")
 
-                # ── PASO 4: Parsear tabla y entrar a cada tarea ────────────
-                return await self._extraer_tareas(page, tareas_url, dias)
+                # ── PASO 4: Expandir cada tarea y leer contenido completo ──
+                return await self._extraer_con_expansion(page, dias)
 
             except ValueError:
                 raise
             except Exception as e:
-                logger.error(f"Error en Playwright: {e}")
+                logger.error(f"Error: {e}")
                 raise
             finally:
                 await browser.close()
 
-    async def _extraer_tareas(self, page, tareas_url: str, dias: int) -> list[dict]:
+    async def _extraer_con_expansion(self, page, dias: int) -> list[dict]:
         hoy    = datetime.now().date()
         limite = hoy + timedelta(days=dias)
         tareas = []
         vistas = set()
 
+        # Primero leer la tabla para saber cuántas filas hay
         html = await page.content()
         soup = BeautifulSoup(html, "html.parser")
 
-        # Recopilar info básica de la tabla primero
-        candidatas = []
+        filas_validas = []
         for tabla in soup.find_all("table"):
-            for fila in tabla.find_all("tr"):
+            for i, fila in enumerate(tabla.find_all("tr")):
                 celdas = fila.find_all("td")
                 if len(celdas) < 3:
                     continue
@@ -123,7 +121,7 @@ class EsemtiaScraper:
                 if materia.lower() in ("materia", "materia/clase", "clase", "tarea", "fecha"):
                     continue
 
-                clave = f"{materia}|{titulo}"
+                clave = f"{materia}|{titulo[:20]}"
                 if clave in vistas:
                     continue
                 vistas.add(clave)
@@ -132,58 +130,64 @@ class EsemtiaScraper:
                 if not fecha_entrega or not (hoy <= fecha_entrega <= limite):
                     continue
 
-                # Buscar link dentro de la celda del título
-                link = titulo_td.find("a")
-                href = link.get("href", "") if link else ""
-
-                candidatas.append({
+                fila_id = fila.get("id", "")
+                filas_validas.append({
                     "fecha":   fecha_entrega,
                     "materia": materia,
                     "titulo":  titulo,
-                    "href":    href,
+                    "fila_id": fila_id,
                 })
 
-        # Ahora entrar a cada tarea para obtener título completo
-        for c in candidatas:
-            titulo_completo = c["titulo"]
+        # Ahora hacer clic en cada fila para expandirla y leer el contenido completo
+        for item in filas_validas:
+            titulo_completo = item["titulo"]
             descripcion = ""
 
-            if c["href"]:
+            if item["fila_id"]:
                 try:
-                    url_detalle = c["href"] if c["href"].startswith("http") else f"https://comunicacion.esemtia.ec/{c['href']}"
-                    await page.goto(url_detalle, timeout=10000)
-                    await page.wait_for_load_state("networkidle", timeout=8000)
+                    # Hacer clic en la fila para expandirla
+                    fila_elem = page.locator(f"#{item['fila_id']}")
+                    await fila_elem.click(timeout=5000)
+                    await page.wait_for_timeout(1000)  # esperar animacion
 
-                    detalle_html = await page.content()
-                    detalle_soup = BeautifulSoup(detalle_html, "html.parser")
+                    # Leer el HTML actualizado
+                    html_exp = await page.content()
+                    soup_exp = BeautifulSoup(html_exp, "html.parser")
 
-                    # Buscar título completo
-                    for sel in ["h1", "h2", ".titulo", ".tituloTarea", "#lblTitulo", ".tarea"]:
-                        elem = detalle_soup.select_one(sel)
-                        if elem:
-                            texto = elem.get_text(strip=True)
-                            if texto and len(texto) > 3:
-                                titulo_completo = texto
-                                break
+                    # Buscar la fila de contenido expandido (suele tener ID relacionado)
+                    content_id = item["fila_id"].replace("tarea_", "tareaContent_").replace("row_", "detail_")
+                    content_div = soup_exp.find(id=content_id)
 
-                    # Buscar descripción
-                    for sel in [".descripcion", ".detalle", "#lblDescripcion", "p"]:
-                        elem = detalle_soup.select_one(sel)
-                        if elem:
-                            texto = elem.get_text(strip=True)
-                            if texto and len(texto) > 5:
-                                descripcion = texto[:300]
-                                break
+                    if content_div:
+                        texto = content_div.get_text(" ", strip=True)
+                        if texto and len(texto) > len(titulo_completo):
+                            # Separar titulo de descripcion si es posible
+                            lineas = [l.strip() for l in texto.split("\n") if l.strip()]
+                            if lineas:
+                                titulo_completo = lineas[0]
+                                descripcion = " ".join(lineas[1:])[:300] if len(lineas) > 1 else ""
+                    else:
+                        # Buscar cualquier elemento nuevo que aparecio tras el clic
+                        fila_siguiente = soup_exp.find(id=item["fila_id"])
+                        if fila_siguiente:
+                            sig = fila_siguiente.find_next_sibling()
+                            if sig:
+                                texto = sig.get_text(" ", strip=True)
+                                if texto and len(texto) > 10:
+                                    descripcion = texto[:300]
 
-                    logger.info(f"Detalle: {titulo_completo[:60]}")
-                    await page.goto(tareas_url, timeout=10000)
-                    await page.wait_for_load_state("networkidle", timeout=8000)
+                    logger.info(f"Tarea: {titulo_completo[:80]}")
+
+                    # Cerrar expansion (segundo clic)
+                    await fila_elem.click(timeout=3000)
+                    await page.wait_for_timeout(500)
+
                 except Exception as ex:
-                    logger.warning(f"No pude entrar al detalle: {ex}")
+                    logger.warning(f"No pude expandir fila {item['fila_id']}: {ex}")
 
             tareas.append({
-                "fecha":       c["fecha"],
-                "materia":     c["materia"],
+                "fecha":       item["fecha"],
+                "materia":     item["materia"],
                 "titulo":      titulo_completo,
                 "descripcion": descripcion,
             })
