@@ -161,11 +161,13 @@ class EsemtiaScraper:
                 if not fecha_entrega or not (hoy <= fecha_entrega <= limite):
                     continue
 
+                fila_id = fila.get("id", "")
+                logger.info(f"Fila encontrada: id={fila_id} | materia={materia} | titulo={titulo[:40]}")
                 filas_validas.append({
                     "fecha":   fecha_entrega,
                     "materia": materia,
                     "titulo":  titulo,
-                    "fila_id": fila.get("id", ""),
+                    "fila_id": fila_id,
                 })
 
         # Expandir cada fila para obtener descripcion completa
@@ -182,20 +184,23 @@ class EsemtiaScraper:
                     soup_exp = BeautifulSoup(html_exp, "html.parser")
 
                     # Buscar fila de detalle con ID relacionado
-                    for patron in [
+                    patrones = [
                         item["fila_id"].replace("tarea_", "tareaContent_"),
                         item["fila_id"].replace("tarea_", "detalle_"),
                         item["fila_id"] + "_content",
                         item["fila_id"] + "_detail",
-                    ]:
-                        content = soup_exp.find(id=patron)
-                        if content:
-                            texto = content.get_text(" ", strip=True)
-                            # Filtrar que no sea metadata de tabla
+                    ]
+                    logger.info(f"Buscando contenido con patrones: {patrones}")
+                    for patron in patrones:
+                        elem = soup_exp.find(id=patron)
+                        if elem:
+                            texto = elem.get_text(" ", strip=True)
                             if texto and len(texto) > 10 and not re.search(r"\d{2}-\d{2}-\d{4}.*\d{2}-\d{2}-\d{4}", texto):
                                 descripcion = texto[:500]
                                 logger.info(f"Descripcion encontrada (id={patron}): {descripcion[:80]}")
                                 break
+                        else:
+                            logger.info(f"No encontrado: id={patron}")
 
                     # Cerrar expansion
                     await page.locator(f"#{item['fila_id']}").click(timeout=3000)
